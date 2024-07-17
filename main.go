@@ -2,10 +2,12 @@ package main
 
 import (
 	"bufio"
+	"bytes"
 	"crypto/sha1"
 	"encoding/json"
 	"fmt"
 	"log"
+	"net/http"
 	"os"
 	"strings"
 	"time"
@@ -14,25 +16,29 @@ import (
 	"layeh.com/radius/rfc2865"
 )
 
-type User struct {
-	Username string
-	Password string
-}
-
 type Logging struct {
 	Status   string `json:"status"`
 	UserID   string `json:"userID"`
-	Company  string `json:"company"`
+	Domain   string `json:"domain"`
 	Password string `json:"password"`
 }
 
-func authentication(username, password string, userList []User) bool {
-	for _, user := range userList {
-		if user.Username == username && user.Password == password {
-			return true
-		}
+func authentication(username, password string) bool {
+	apiURL := "http://35.221.197.240/api/auth/login"
+	jsonData := map[string]string{"userName": username, "password": password}
+	jsonValue, _ := json.Marshal(jsonData)
+
+	resp, err := http.Post(apiURL, "application/json", bytes.NewBuffer(jsonValue))
+	if err != nil {
+		log.Fatal(err)
 	}
-	return false
+	defer resp.Body.Close()
+
+	if resp.StatusCode == http.StatusOK {
+		return true
+	} else {
+		return false
+	}
 }
 
 func parseUsername(username string) (string, string) {
@@ -45,7 +51,7 @@ func parseUsername(username string) (string, string) {
 	return parts[0], ""
 }
 
-func convertLogging(code radius.Code, userID, company, password string) string {
+func convertLogging(code radius.Code, userID, domain, password string) string {
 	hashedPassword := fmt.Sprintf("%x", sha1.Sum([]byte(password)))
 	var status string
 	if code == radius.CodeAccessAccept {
@@ -56,7 +62,7 @@ func convertLogging(code radius.Code, userID, company, password string) string {
 	logging := Logging{
 		Status:   status,
 		UserID:   userID,
-		Company:  company,
+		Domain:   domain,
 		Password: hashedPassword,
 	}
 	byteArray, err := json.Marshal(logging)
@@ -83,9 +89,9 @@ func readConfigFile(filename string) (map[string]string, error) {
 	if err != nil {
 		return nil, err
 	}
-	defer file.Close() // đóng file sau khi hàm kết thúc
+	defer file.Close()
 
-	config := make(map[string]string) // khởi tạo map
+	config := make(map[string]string)
 	scanner := bufio.NewScanner(file)
 	for scanner.Scan() {
 		line := scanner.Text()
@@ -95,7 +101,7 @@ func readConfigFile(filename string) (map[string]string, error) {
 		if line[0] == '#' {
 			continue
 		}
-		parts := strings.SplitN(line, "=", 2) // tách thành mảng có tối đa 2 phân tử phân cách bởi dấu "="
+		parts := strings.SplitN(line, "=", 2)
 		if len(parts) != 2 {
 			continue
 		}
@@ -108,26 +114,20 @@ func readConfigFile(filename string) (map[string]string, error) {
 }
 
 func main() {
-	userList := []User{
-		User{"tungnd@hcmut.edu.vn", "hoidai"},
-		User{"hoangvo@hcmut.edu.vn", "thuky"},
-		User{"tuannda@hcmut.edu.vn", "captain"},
-	}
-
 	handler := func(w radius.ResponseWriter, r *radius.Request) {
 		username := strings.TrimSpace(rfc2865.UserName_GetString(r.Packet))
 		password := strings.TrimSpace(rfc2865.UserPassword_GetString(r.Packet))
 
 		var code radius.Code
-		checkAuth := authentication(username, password, userList)
-		userID, company := parseUsername(username)
-		if checkAuth == true {
+		checkAuth := authentication(username, password)
+		userID, domain := parseUsername(username)
+		if checkAuth {
 			code = radius.CodeAccessAccept
 		} else {
 			code = radius.CodeAccessReject
 		}
 
-		logging(convertLogging(code, userID, company, password), "log.txt")
+		logging(convertLogging(code, userID, domain, password), "log.txt")
 
 		w.Write(r.Response(code))
 	}
